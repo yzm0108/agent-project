@@ -1,0 +1,18 @@
+# docker-compose.yml — 一键启动，不用记 docker run 的长命令
+# 用法：docker compose up --build
+
+services:
+  agent:
+    build: .                          # 用当前目录的 Dockerfile 构建
+    container_name: ai-agent-app       # 容器名（方便 docker logs 查看）
+    environment:
+      # 从 .env 文件读环境变量
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL}
+      # Ollama 在宿主机上，host.docker.internal 指向宿主机
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+    volumes:
+      # 把 chroma_db 映射出来，删了容器也不丢知识库
+      - ./chroma_db:/app/chroma_db
+    stdin_open: true                   # -i：保持 stdin 打开（交互式程序需要）
+    tty: true                          # -t：分配伪终端

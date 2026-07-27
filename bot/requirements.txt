@@ -1,0 +1,6 @@
+# 贵AI 多平台 Bot 扩展 — 额外依赖
+# 主项目已有的（openai, chromadb, tiktoken, streamlit 等）不需要重复安装
+
+python-telegram-bot>=20.0    # Telegram Bot API
+aiohttp>=3.9                  # 飞书 HTTP 客户端 + Webhook 服务器
+pyyaml>=6.0                   # 配置文件解析

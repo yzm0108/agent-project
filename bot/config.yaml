@@ -1,0 +1,13 @@
+# ===== 多平台 Bot 配置文件 =====
+# 所有密钥也可以通过环境变量传入（优先级更高）
+
+telegram:
+  # 从 @BotFather 获取，格式: 123456:ABC-DEF1234gh
+  token: "${TELEGRAM_BOT_TOKEN}"
+
+feishu:
+  # 从飞书开放平台获取: https://open.feishu.cn/
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+  # Webhook 服务端口
+  port: 8080
