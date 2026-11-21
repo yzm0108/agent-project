@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.x-red)](https://streamlit.io/)
-[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek--Chat-green)](https://platform.deepseek.com/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek%20V4%20Flash-green)](https://platform.deepseek.com/)
 [![ChromaDB](https://img.shields.io/badge/VectorDB-ChromaDB-orange)](https://www.trychroma.com/)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://www.docker.com/)
 
@@ -16,8 +16,10 @@
 |------|---------|
 | **真 Agent（非 if-else）** | LLM 自主决定调不调工具、调几个、搜什么 |
 | **Agentic RAG** | 不只搜一次：结果不够→换词再搜→够了才回答 |
-| **分类检索** | 知识库 6 大类，支持按分类过滤搜索 |
+| **分类检索** | 6 大种子分类 + 自定义分类，支持按分类过滤搜索 |
+| **知识库增量导入** | 粘贴/上传 txt·md，自动清洗、去重、200 条/批、两阶段原子写库 |
 | **并行工具调用** | ThreadPoolExecutor，多工具同时执行 |
+| **工具异常兜底** | 参数错误/执行异常转可读信息，不打断 Agent 主循环 |
 | **Memory 管理** | Token 计数 + 按轮裁剪 |
 | **流式输出** | DeepSeek stream=True，token 逐字渲染 |
 | **溯源标注** | 回答末尾标注信息来源文档 |
@@ -40,8 +42,8 @@
                     │
          数据层
      ┌──────────┐  ┌──────────────┐
-     │ ChromaDB │  │ 知识库 31条   │
-     │ 持久向量  │  │ 6分类·语义搜索 │
+     │ ChromaDB │  │ 31条种子知识  │
+     │ 持久向量  │  │ 6分类·增量导入 │
      └──────────┘  └──────────────┘
 ```
 
@@ -51,7 +53,8 @@
 
 ### 前提
 
-- Python 3.12+ / [Ollama](https://ollama.com/) 已拉取 `bge-embed` / DeepSeek API Key
+- Python 3.12+ / [Ollama](https://ollama.com/) / DeepSeek API Key
+- 拉取 Embedding 模型：`ollama pull bge-embed`
 
 ### 启动
 
@@ -59,7 +62,10 @@
 git clone https://github.com/yzm0108/agent-project.git
 cd agent-project/guizhou_agent
 pip install -r ../requirements.txt
-# 创建 .env 填入 DEEPSEEK_API_KEY、DEEPSEEK_BASE_URL、GAODE_API_KEY
+# 在当前目录创建 .env，至少填入：
+# DEEPSEEK_API_KEY=...
+# DEEPSEEK_BASE_URL=https://api.deepseek.com
+# GAODE_API_KEY=...
 streamlit run app.py
 ```
 
@@ -73,6 +79,16 @@ docker compose up --build
 ```
 
 浏览器打开 **http://localhost:8501**
+
+### 多平台 Bot（飞书 / 企业微信）
+
+```bash
+cd bot
+pip install -r requirements.txt
+python main.py --platform all
+```
+
+配置方式见 [bot/README.md](bot/README.md)。
 
 ---
 
@@ -104,7 +120,7 @@ agent-project/
 ## 🐛 踩坑记录
 
 ### 字符串匹配 → 语义搜索
-用户搜"Python 创造者是谁"，知识库写的是"Python 由 Guido van Rossum 创造"。
+用户搜"贵州有什么特色菜"，知识库写的是"酸汤鱼是贵州苗族传统美食"。
 `in` 操作符匹配失败 → 换 BGE Embedding 语义搜索，召回率 40%→90%。
 
 ### Memory 裁剪拆散 tool_calls 配对
@@ -134,8 +150,10 @@ agent-project/
 | 问题 | 答案 |
 |---------|---------|
 | Agent 和 LLM 区别？ | Agent 有工具调用+ReAct+Memory |
-| RAG 怎么做？ | Embedding+ChromaDB+分类过滤+语义搜索 |
+| RAG 怎么做？ | 清洗/切分 → Embedding → ChromaDB → 分类/阈值过滤 → 语义搜索 |
 | Agentic RAG 是什么？ | Agent 自主决定搜不搜、搜几次、搜什么词 |
+| 知识库增量导入怎么做？ | 清洗 → 空行切分 → 精确去重 → 200 条/批 Embedding → 两阶段原子写库 |
+| 工具调用出错怎么办？ | execute_one 捕获异常，返回可读错误字符串，交给 LLM 兜底 |
 | 多平台 Bot 怎么设计？ | 适配器模式 + BaseChannel 统一接口 + 同步/异步桥接 |
 | Memory 怎么管理？ | Token 计数+按轮裁剪+工具结果截断 |
 | 遇到什么困难？ | 见踩坑记录 |
