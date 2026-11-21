@@ -9,11 +9,11 @@ from typing import Optional
 @dataclass
 class InboundMessage:
     """用户发来的消息（统一格式，屏蔽平台差异）"""
-    session_id: str       # 会话标识（如 "tg_123456"、"feishu_abc"）
+    session_id: str       # 会话标识（如 "wecom_xxx"、"feishu_abc"）
     user_id: str          # 用户 ID
     user_name: str        # 用户昵称
     text: str             # 消息文本
-    platform: str         # 来源平台（"telegram" / "feishu"）
+    platform: str         # 来源平台（"feishu" / "wecom"）
     timestamp: float = 0.0
 
 

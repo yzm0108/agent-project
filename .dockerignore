@@ -1,5 +1,9 @@
+# 任何层级的 .env 都不进镜像；运行时由 compose 的 env_file 注入
 .env
+**/.env
 __pycache__/
+**/__pycache__/
 *.pyc
+**/*.pyc
 .git/
 chroma_db/

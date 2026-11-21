@@ -22,7 +22,7 @@
 | **流式输出** | DeepSeek stream=True，token 逐字渲染 |
 | **溯源标注** | 回答末尾标注信息来源文档 |
 | **多轮对话记忆** | 跨轮上下文保留，支持指代消解 |
-| **多平台接入** | Telegram + 飞书，适配器模式统一消息，同步/异步桥接 |
+| **多平台接入** | 飞书 + 企业微信，适配器模式统一消息，同步/异步桥接 |
 
 ---
 
@@ -33,7 +33,7 @@
                     │
            GuizhouAgent (ReAct 循环)
            Think→Act→Observe→Think...
-           Memory管理 · 确认锁定 · 并行执行
+           Memory管理 · 并行执行 · 状态可视化
             │                  │
      DeepSeek API         Ollama (本地 BGE)
      对话+工具调用          Embedding 向量化
@@ -58,8 +58,8 @@
 ```bash
 git clone https://github.com/yzm0108/agent-project.git
 cd agent-project/guizhou_agent
-pip install openai python-dotenv chromadb tiktoken streamlit
-# 创建 .env 填入 DEEPSEEK_API_KEY 和 DEEPSEEK_BASE_URL
+pip install -r ../requirements.txt
+# 创建 .env 填入 DEEPSEEK_API_KEY、DEEPSEEK_BASE_URL、GAODE_API_KEY
 streamlit run app.py
 ```
 
@@ -68,8 +68,11 @@ streamlit run app.py
 ### Docker
 
 ```bash
+# 宿主机先启动 Ollama 并拉取 bge-embed；compose 会读取 guizhou_agent/.env
 docker compose up --build
 ```
+
+浏览器打开 **http://localhost:8501**
 
 ---
 
@@ -86,8 +89,8 @@ agent-project/
 ├── bot/
 │   ├── base.py                # 适配器基类 + 统一消息格式
 │   ├── handler.py             # 核心处理器（对接 Agent + 会话管理）
-│   ├── telegram_bot.py        # Telegram 适配器
 │   ├── feishu_bot.py          # 飞书适配器（Webhook + API）
+│   ├── wecom_bot.py           # 企业微信适配器（长连接）
 │   ├── main.py                # 统一启动入口
 │   ├── config.yaml            # 平台配置
 │   └── README.md              # Bot 使用文档
@@ -114,11 +117,15 @@ agent-project/
 
 ### Docker 容器内连不上 Ollama
 容器里 localhost 指向容器自身，Ollama 在宿主机。
-→ 环境变量配置地址，Docker 内用 `host.docker.internal`。
+→ 代码读取 `OLLAMA_BASE_URL`，Docker 内配置为 `host.docker.internal`。
 
-### 用户说"好的"后 AI 重新生成 2000 字攻略
-确认话术被当成"要新攻略"，LLM 把两条路线内容搞混。
-→ 代码层拦截：上一轮是规划 + 短消息 = 直接锁定，不调 LLM。
+### 天气 API 不可用导致回答失败
+高德 API 可能超时、挂掉或返回异常数据。
+→ 三级兜底：实时 API → 30 分钟缓存 → 本地静态数据（覆盖 8 个城市），每级失败自动降级。
+
+### 飞书重启后旧消息被重复处理
+重启后内存里的 `_seen_event_ids` 清空，旧事件被重新推送。
+→ event_id 去重 + 启动时间过滤，启动前的消息直接丢弃。
 
 ---
 
@@ -137,7 +144,7 @@ agent-project/
 
 ## 📊 技术栈
 
-Python 3.12 · Streamlit · DeepSeek-Chat · Ollama BGE · ChromaDB · Docker · python-telegram-bot · aiohttp · Feishu Open API
+Python 3.12 · Streamlit · DeepSeek V4 Flash · Ollama BGE · ChromaDB · Docker · aiohttp · 飞书开放平台 · 企业微信 aibot
 
 ---
 

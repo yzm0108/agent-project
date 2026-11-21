@@ -33,6 +33,8 @@ class FeishuBot(BaseChannel):
         self.port = port
         self._tenant_token: str | None = None
         self._token_expire: float = 0.0
+        self._seen_event_ids: set[str] = set()
+        self._startup_time = time.time()
 
     # ===== 启动 =====
 
@@ -75,10 +77,23 @@ class FeishuBot(BaseChannel):
             return web.json_response({"challenge": body["challenge"]})
 
         # 处理消息事件
-        event = body.get("event", {})
-        if event.get("type") != "im.message.receive_v1":
+        header = body.get("header", {})
+        if header.get("event_type") != "im.message.receive_v1":
             return web.json_response({"code": 0})
 
+        create_time_ms = int(header.get("create_time", 0))
+        if create_time_ms and create_time_ms / 1000 < self._startup_time - 5:
+            return web.json_response({"code": 0})
+
+        event_id = header.get("event_id", "")
+        if event_id and event_id in self._seen_event_ids:
+            return web.json_response({"code": 0})
+        if event_id:
+            self._seen_event_ids.add(event_id)
+            if len(self._seen_event_ids) > 1000:
+                self._seen_event_ids.clear()
+
+        event = body.get("event", {})
         message = event.get("message", {})
         content_str = message.get("content", "{}")
         try:
@@ -144,6 +159,8 @@ class FeishuBot(BaseChannel):
                     result = await resp.json()
                     if result.get("code") != 0:
                         print(f"[FeishuBot] 发送失败: {result}")
+                    else:
+                        print(f"[FeishuBot] 发送成功")
         except Exception as e:
             print(f"[FeishuBot] 发送异常: {e}")
 

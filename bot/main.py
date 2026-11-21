@@ -2,13 +2,13 @@
 main.py — 多平台 Bot 统一启动入口
 
 用法:
-    # 只启动 Telegram
-    python bot/main.py --platform telegram
-
     # 只启动飞书
     python bot/main.py --platform feishu
 
-    # 同时启动两个平台
+    # 只启动企业微信
+    python bot/main.py --platform wecom
+
+    # 同时启动所有已配置平台
     python bot/main.py --platform all
 
 配置:
@@ -21,13 +21,15 @@ import sys
 import asyncio
 import argparse
 import yaml
+from dotenv import load_dotenv
 
 # 把项目根目录加入路径，方便 import bot 和 guizhou_agent
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
+load_dotenv(os.path.join(PROJECT_ROOT, "guizhou_agent", ".env"))
+
 from bot.handler import BotHandler
-from bot.telegram_bot import TelegramBot
 from bot.feishu_bot import FeishuBot
 
 
@@ -63,7 +65,7 @@ async def main():
     parser = argparse.ArgumentParser(description="贵AI 多平台 Bot")
     parser.add_argument(
         "--platform",
-        choices=["telegram", "feishu", "all"],
+        choices=["feishu", "wecom", "all"],
         default="all",
         help="启动哪个平台（默认 all）",
     )
@@ -80,15 +82,6 @@ async def main():
     # 收集要启动的适配器
     adapters = []
 
-    if args.platform in ("telegram", "all"):
-        tg_token = config.get("telegram", {}).get("token", "")
-        if not tg_token:
-            print("[main] ⚠️  未配置 Telegram Token，跳过 Telegram")
-        else:
-            tg = TelegramBot(token=tg_token)
-            tg.on_message(handler.handle)
-            adapters.append(("Telegram", tg))
-
     if args.platform in ("feishu", "all"):
         feishu_cfg = config.get("feishu", {})
         feishu_app_id = feishu_cfg.get("app_id", "")
@@ -104,6 +97,20 @@ async def main():
             )
             feishu.on_message(handler.handle)
             adapters.append(("飞书", feishu))
+
+    if args.platform in ("wecom", "all"):
+        # 延迟导入：只跑飞书时，不需要安装企业微信 SDK
+        from bot.wecom_bot import WecomBot
+
+        wecom_cfg = config.get("wecom", {})
+        wecom_bot_id = wecom_cfg.get("bot_id", "")
+        wecom_secret = wecom_cfg.get("secret", "")
+        if not wecom_bot_id or not wecom_secret:
+            print("[main] ⚠️  未配置企业微信 Bot ID/Secret，跳过企业微信")
+        else:
+            wecom = WecomBot(bot_id=wecom_bot_id, secret=wecom_secret)
+            wecom.on_message(handler.handle)
+            adapters.append(("企业微信", wecom))
 
     if not adapters:
         print("[main] ❌ 没有可启动的平台，请检查 config.yaml")

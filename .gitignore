@@ -4,3 +4,8 @@ __pycache__/
 .venv/
 chroma_db/
 bot/config.local.yaml
+
+# 本地资料，不上传
+PROJECT_NOTES.md
+待修改问题.md
+注释版/

@@ -26,6 +26,79 @@ def load_kb():
 kb = load_kb()
 agent = GuizhouAgent(kb)
 
+BATCH_MAX_CHARS = 1000   # 粘贴直接输入的总字数上限，超出请走文件导入
+
+
+def _decode_text(data: bytes) -> str:
+    """上传文件解码：优先 UTF-8，失败回退 GBK（Windows 文本常见编码）"""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("gbk", errors="replace")
+
+
+def _run_import(kb, raw_text: str, category: str) -> None:
+    """执行批量导入并展示结果"""
+    if not raw_text or not raw_text.strip():
+        st.warning("没有可导入的内容")
+        return
+    if not category or not category.strip():
+        st.warning("请选择或填写分类")
+        return
+
+    try:
+        result = kb.import_texts(raw_text, category)
+    except ValueError as e:
+        st.warning(f"导入失败：{e}")
+        return
+    except Exception as e:
+        st.error(f"导入失败：{type(e).__name__}: {e}")
+        return
+
+    if result["imported"] > 0:
+        st.success(f"✅ 成功导入 {result['imported']} 条，知识库共 {kb.collection.count()} 条")
+
+    notes = []
+    if result["skipped_duplicate"]:
+        notes.append(f"重复跳过 {result['skipped_duplicate']} 条")
+    if result["skipped_short"]:
+        notes.append(f"过短过滤 {result['skipped_short']} 条")
+    if notes:
+        st.info("；".join(notes))
+    if result["imported"] == 0 and not notes:
+        st.warning("未识别到有效条目，请检查内容是否用空行分隔")
+
+
+def _format_tool_result(result) -> str:
+    """把 tool_log 里的结果转成展示文本（兼容结构化 dict、字符串和空结果）"""
+    if result is None:
+        return "检索失败或工具暂不可用"
+    if isinstance(result, list):
+        if not result:
+            return "未找到相关结果"
+        if isinstance(result[0], dict):
+            return "\n".join(
+                f"[{r.get('category', '')}·{r.get('id', '')}] (相关度{r.get('score', '')}) {r.get('content', '')}"
+                for r in result
+            )
+    return str(result)
+
+
+CUSTOM_CATEGORY_OPTION = "＋ 自定义分类"
+
+
+def _category_select(key: str, help: str = None) -> str:
+    """分类选择：现有分类 + 自定义分类输入"""
+    cats = list(kb.categories)
+    options = cats + [CUSTOM_CATEGORY_OPTION]
+    cat = st.selectbox("分类", options, key=key, help=help)
+    if cat == CUSTOM_CATEGORY_OPTION:
+        cat = st.text_input("自定义分类", key=f"{key}_custom").strip()
+        if not cat:
+            st.caption("⚠️ 请填写自定义分类名称")
+    return cat
+
+
 col1, col2 = st.columns([3, 1])
 with col1:
     st.title("🏔️ 贵AI — 贵州旅游智能助手")
@@ -45,31 +118,61 @@ with st.sidebar:
 
     # 添加知识
     st.subheader("✏️ 添加新知识")
-    new_cat = st.selectbox("分类", kb.categories)
-    new_text = st.text_area("内容", placeholder="输入一条新知识...", key="new_kb")
-    if st.button("添加到知识库"):
-        if new_text.strip():
-            new_id = f"user_{kb.collection.count()}"
-            full_text = new_text.strip()
-            emb = kb._embed(full_text)
-            kb.collection.add(
-                ids=[new_id],
-                documents=[full_text],
-                embeddings=[emb],
-                metadatas=[{"category": new_cat}],
+    tab_single, tab_batch = st.tabs(["单条添加", "批量导入"])
+
+    with tab_single:
+        new_cat = _category_select("single_cat")
+        new_text = st.text_area("内容", placeholder="输入一条新知识...", key="new_kb")
+        if st.button("添加到知识库", key="btn_single"):
+            text = new_text.strip()
+            if not text:
+                st.warning("请输入内容")
+            elif not new_cat.strip():
+                st.warning("请选择或填写分类")
+            else:
+                try:
+                    kb.add_document(text, new_cat)  # id 由 add_document 自动生成
+                    st.success(f"已添加！知识库共 {kb.collection.count()} 条")
+                    st.rerun()
+                except ValueError as e:
+                    st.warning(f"添加失败：{e}")
+                except Exception as e:
+                    st.error(f"添加失败：{type(e).__name__}: {e}")
+
+    with tab_batch:
+        batch_cat = _category_select("batch_cat",
+                                     help="一个文件视为同一分类，请在导入前确认内容类型一致")
+        batch_mode = st.radio("输入方式", ["粘贴文本", "上传文件"], horizontal=True,
+                              key="batch_mode")
+        if batch_mode == "粘贴文本":
+            batch_text = st.text_area(
+                "多条内容（空行分隔，空行数量随意）",
+                placeholder="例如：\n黄果树瀑布位于安顺市...\n\n酸汤鱼是贵州苗族特色菜...",
+                key="batch_text", height=160,
             )
-            # 同时更新内存中的 documents
-            kb.documents.append({"id": new_id, "category": new_cat, "content": full_text})
-            st.success(f"已添加！知识库共 {kb.collection.count()} 条")
-            st.rerun()
+            st.caption(f"{len(batch_text)} / {BATCH_MAX_CHARS} 字")
+            if len(batch_text) > BATCH_MAX_CHARS:
+                st.error(f"已超出 {BATCH_MAX_CHARS} 字上限，请删减或改用文件导入（本次未导入）")
+            if st.button("导入", key="btn_batch_text"):
+                if len(batch_text) > BATCH_MAX_CHARS:
+                    st.error(f"超出 {BATCH_MAX_CHARS} 字上限，未导入，请删减或改用文件导入")
+                else:
+                    _run_import(kb, batch_text, batch_cat)
         else:
-            st.warning("请输入内容")
+            uploaded = st.file_uploader("上传 .txt / .md 文件", type=["txt", "md"],
+                                        key="batch_file")
+            if st.button("导入", key="btn_batch_file"):
+                if uploaded is None:
+                    st.warning("请先选择文件")
+                else:
+                    content = _decode_text(uploaded.read())
+                    _run_import(kb, content, batch_cat)
 
     st.divider()
 
     # 查看知识
     with st.expander("📖 浏览知识库", expanded=False):
-        for d in kb.documents:
+        for d in kb.all_documents():
             st.caption(f"**[{d['category']}]** {d['content'][:80]}...")
             st.divider()
 
@@ -113,7 +216,7 @@ for msg in st.session_state.messages:
             with st.expander("🔍 Agent 搜索过程", expanded=False):
                 for step, tool_name, result in tool_log:
                     st.caption(f"**第{step}步 · {tool_name}**")
-                    st.text(result[:300])
+                    st.text(_format_tool_result(result)[:300])
 
 if prompt := st.chat_input("问一个关于贵州的问题..."):
     # 显示用户消息
@@ -178,7 +281,7 @@ if prompt := st.chat_input("问一个关于贵州的问题..."):
             with st.expander("🔍 Agent 搜索过程", expanded=False):
                 for step, tool_name, result in tool_log:
                     st.caption(f"**第{step}步 · {tool_name}**")
-                    st.text(result[:300])
+                    st.text(_format_tool_result(result)[:300])
 
     # 保存到历史
     st.session_state.messages.append({

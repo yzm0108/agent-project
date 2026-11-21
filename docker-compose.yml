@@ -1,16 +1,20 @@
 # docker-compose.yml — 一键启动，不用记 docker run 的长命令
 # 用法：docker compose up --build
+# 前置：宿主机已启动 Ollama，并拉取 bge-embed 模型；guizhou_agent/.env 已填好密钥
 
 services:
   agent:
     build: .                          # 用当前目录的 Dockerfile 构建
     container_name: ai-agent-app       # 容器名（方便 docker logs 查看）
+    env_file:
+      - ./guizhou_agent/.env           # DeepSeek / 高德 / 飞书 / 企微密钥
     environment:
-      # 从 .env 文件读环境变量
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL}
       # Ollama 在宿主机上，host.docker.internal 指向宿主机
       - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+    ports:
+      - "8501:8501"                    # 浏览器访问 http://localhost:8501
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux 下也能解析宿主机地址
     volumes:
       # 把 chroma_db 映射出来，删了容器也不丢知识库
       - ./chroma_db:/app/chroma_db

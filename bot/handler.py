@@ -16,7 +16,7 @@ from agent import GuizhouAgent
 
 # 历史记录配置
 HISTORY_EXPIRE_SECONDS = 1800   # 30 分钟无活动则清理
-REPLY_MAX_CHARS = 4000          # 单条消息最大字符数（Telegram 限制 4096）
+REPLY_MAX_CHARS = 4000          # 单条消息最大字符数（避免超出平台消息长度限制）
 
 
 class BotHandler:
@@ -33,6 +33,8 @@ class BotHandler:
         self._sessions: dict[str, list[dict]] = {}
         # 最后活跃时间: session_id → timestamp
         self._last_active: dict[str, float] = {}
+        # 会话锁: session_id → asyncio.Lock（同 session 排队，防止并发覆盖历史）
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def handle(self, msg) -> str:
         """
@@ -47,17 +49,23 @@ class BotHandler:
         if not user_question:
             return "请输入内容～"
 
-        # 获取该会话的历史消息
-        history = self._sessions.get(msg.session_id)
+        # 获取该会话的历史消息（同 session 排队处理）
+        lock = self._locks.get(msg.session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[msg.session_id] = lock
 
-        answer, tool_log, sources, new_history = await asyncio.to_thread(
-            self.agent.run,
-            user_question=user_question,
-            history=history,
-        )
+        async with lock:
+            history = self._sessions.get(msg.session_id)
 
-        # 更新会话历史
-        self._sessions[msg.session_id] = new_history
+            answer, tool_log, sources, new_history = await asyncio.to_thread(
+                self.agent.run,
+                user_question=user_question,
+                history=history,
+            )
+
+            # 更新会话历史
+            self._sessions[msg.session_id] = new_history
 
         # 如果回复太长，分段
         return self._maybe_split(answer)
@@ -92,6 +100,7 @@ class BotHandler:
         for sid in expired:
             self._sessions.pop(sid, None)
             self._last_active.pop(sid, None)
+            self._locks.pop(sid, None)
         if expired:
             print(f"[BotHandler] 清理了 {len(expired)} 个过期会话")
 

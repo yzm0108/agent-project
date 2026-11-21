@@ -55,6 +55,24 @@ SYSTEM_PROMPT = """你是「贵AI」——一个**专业、专注**的贵州旅�
 记住：你是一个纯粹的贵州旅游助手，这是你的唯一身份。"""
 
 
+def _tool_result_text(tool_name: str, result, query: str = "") -> str:
+    """把工具执行结果转成给 LLM 的文本。
+
+    search_guizhou 返回结构化 list[dict]，这里负责序列化与提示；
+    其他工具返回字符串，原样透传。
+    """
+    if tool_name == "search_guizhou":
+        if result is None:
+            return "知识库检索暂时不可用，请稍后再试。"
+        if not result:
+            return f"知识库中未找到关于'{query}'的相关信息，建议换个关键词再搜。"
+        return "\n".join(
+            f"[{r['category']}·{r['id']}] (相关度{r['score']}) {r['content']}"
+            for r in result
+        )
+    return result if isinstance(result, str) else str(result)
+
+
 class GuizhouAgent:
     """贵州旅游 Agent"""
 
@@ -65,20 +83,13 @@ class GuizhouAgent:
         )
         self.executor = ToolExecutor(knowledge_base)
         self.kb = knowledge_base
-        self.tool_defs = get_tool_definitions()
+        self.tool_defs = get_tool_definitions(self.kb.categories)
 
     def run(self, user_question, history=None, on_step=None, on_stream=None):
         if history is None:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         else:
             messages = list(history)
-
-        # 确认锁定：用户说确认话术时跳过 LLM 调用，直接返回锁定结果
-        shortcut = self._maybe_confirm_choice(history, user_question)
-        if shortcut:
-            messages.append({"role": "user", "content": user_question})
-            messages.append({"role": "assistant", "content": shortcut})
-            return shortcut, [], [], messages
 
         messages.append({"role": "user", "content": user_question})
 
@@ -91,9 +102,11 @@ class GuizhouAgent:
 
             # LLM 调用（流式 + tools）
             resp = self.llm.chat.completions.create(
-                model="deepseek-chat",
+                model="deepseek-v4-flash",
                 messages=messages,
                 tools=self.tool_defs,
+                timeout=30,
+                extra_body={"thinking": {"type": "disabled"}},
             )
             msg = resp.choices[0].message
 
@@ -104,9 +117,11 @@ class GuizhouAgent:
 
                 if on_stream:
                     stream = self.llm.chat.completions.create(
-                        model="deepseek-chat",
+                        model="deepseek-v4-flash",
                         messages=messages,
                         stream=True,
+                        timeout=30,
+                        extra_body={"thinking": {"type": "disabled"}},
                     )
                     full_answer = ""
                     try:
@@ -150,19 +165,26 @@ class GuizhouAgent:
                     for tc in msg.tool_calls
                 ],
             })
-      
+
+            # 记录每个 tool_call 的参数（生成给 LLM 的提示文本需要 query）
+            tool_args = {}
+            for tc in msg.tool_calls:
+                try:
+                    tool_args[tc.id] = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except (json.JSONDecodeError, AttributeError):
+                    tool_args[tc.id] = {}
+
             for tc_id, tool_name, result in results:
-                short = result if len(result) <= 300 else result[:300] + "..."
+                args = tool_args.get(tc_id, {})
+                text = _tool_result_text(tool_name, result, args.get("query", ""))
+                short = text if len(text) <= 300 else text[:300] + "..."
                 tool_log.append((step, tool_name, result))
                 messages.append({"role": "tool", "tool_call_id": tc_id, "content": short})
 
-                if tool_name == "search_guizhou":
-                    for line in result.split("\n"):
-                        if "·" in line and "]" in line:
-                            try:
-                                sources.add(line.split("·")[1].split("]")[0].strip())
-                            except (IndexError, ValueError):
-                                pass
+                if tool_name == "search_guizhou" and result:
+                    for r in result:
+                        if r.get("id"):
+                            sources.add(r["id"])
 
                 if on_step:
                     on_step(step, "tool_result", (tool_name, result))
@@ -171,7 +193,8 @@ class GuizhouAgent:
         messages.append({"role": "user", "content": "请基于以上搜索结果给出完整回答。"})
         if on_stream:
             stream = self.llm.chat.completions.create(
-                model="deepseek-chat", messages=messages, stream=True
+                model="deepseek-v4-flash", messages=messages, stream=True,
+                timeout=30, extra_body={"thinking": {"type": "disabled"}},
             )
             full_answer = ""
             try:
@@ -187,7 +210,8 @@ class GuizhouAgent:
             messages.append({"role": "assistant", "content": full_answer})
             return full_answer, tool_log, list(sources), messages
         else:
-            final = self.llm.chat.completions.create(model="deepseek-chat", messages=messages)
+            final = self.llm.chat.completions.create(model="deepseek-v4-flash", messages=messages,
+                timeout=30, extra_body={"thinking": {"type": "disabled"}})
             answer = final.choices[0].message.content or ""
             messages.append({"role": "assistant", "content": answer})
             return answer, tool_log, list(sources), messages
@@ -198,72 +222,6 @@ class GuizhouAgent:
             content = m.get("content", "") or ""
             total += len(encoder.encode(content))
         return total
-
-    def _has_pending_options(self, history):
-        """检查上一轮 AI 是否给了多个方案需要用户选择"""
-        if not history:
-            return False
-        # 取最后一条 assistant 消息
-        last_assistant = ""
-        for m in reversed(history):
-            if m.get("role") == "assistant" and m.get("content"):
-                last_assistant = m["content"]
-                break
-        if not last_assistant:
-            return False
-        # 检测多方案标记
-        import re
-        patterns = [
-            r'方案\s*[A-Z一二三四五]',   # 方案A、方案一
-            r'选项\s*\d',                 # 选项1
-            r'推荐方案[一二三四五]',       # 推荐方案一
-            r'第\s*[一二三]\s*[个种]',    # 第一个、第二种
-            r'路线\s*[A-Z]',              # 路线A
-        ]
-        return any(re.search(p, last_assistant) for p in patterns)
-
-    def _last_assistant_was_plan(self, history):
-        """上一轮 AI 是否给了行程规划（而不是纯问答）"""
-        if not history:
-            return False
-        for m in reversed(history):
-            if m.get("role") == "assistant" and m.get("content"):
-                content = m["content"]
-                # 含行程规划关键词
-                plan_keywords = ["Day", "第", "天", "行程", "方案", "规划", "路线", "攻略",
-                                 "黄果树", "荔波", "苗寨", "贵阳", "景点", "住宿", "交通"]
-                return any(kw in content for kw in plan_keywords)
-        return False
-
-    def _maybe_confirm_choice(self, history, user_input):
-        """上一轮是规划 + 用户回复短且不像新问题 → 确认锁定"""
-        if not history:
-            return None
-        if not self._last_assistant_was_plan(history):
-            return None
-
-        msg = user_input.strip()
-
-        # 是新问题？（含疑问词 或 问号 或 很长）→ 放行给 LLM
-        question_words = ["什么", "怎么", "哪里", "哪个", "如何", "多少", "多久", "多远", "?"]
-        if any(w in msg for w in question_words) or len(msg) > 15:
-            return None
-
-        # 是修改请求？→ 放行
-        modify_words = ["改", "换", "不要", "别", "不想要", "去掉", "取消", "重新"]
-        if any(w in msg for w in modify_words):
-            return None
-
-        # 其余都算确认
-        return (
-            "好的，方案已锁定！✅\n\n"
-            "接下来我可以帮你：\n"
-            "1. 📋 生成详细行程清单（每天几点去哪、吃什么、住哪里）\n"
-            "2. 🏨 推荐具体酒店/民宿\n"
-            "3. 🚗 查交通（高铁时刻、大巴班次）\n"
-            "4. 🌤️ 查出行日期的天气\n\n"
-            "你想让我帮你做哪个？或者还有其他想调整的吗？"
-        )
 
     def _trim_messages(self, messages):
         system_msgs = [m for m in messages if m.get("role") == "system"]

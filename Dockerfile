@@ -20,8 +20,11 @@ COPY . .
 # ⑤ ENV：设置环境变量（Python 输出不要缓冲，否则 docker logs 看不到）
 ENV PYTHONUNBUFFERED=1
 
+# Ollama 默认在宿主机上；docker compose 里会覆盖成 host.docker.internal
+ENV OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+
 # ⑥ 告诉 Docker：这个容器会用到内部端口（Streamlit 默认 8501）
 EXPOSE 8501
 
 # ⑦ CMD：容器启动时默认执行的命令（可以 docker run 时覆盖）
-CMD ["python", "11_agentic_rag.py"]
+CMD ["streamlit", "run", "guizhou_agent/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
