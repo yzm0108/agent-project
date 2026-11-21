@@ -121,7 +121,7 @@ agent-project/
 
 ### 字符串匹配 → 语义搜索
 用户搜"贵州有什么特色菜"，知识库写的是"酸汤鱼是贵州苗族传统美食"。
-`in` 操作符匹配失败 → 换 BGE Embedding 语义搜索，召回率 40%→90%。
+`in` 操作符匹配失败 → 换 BGE Embedding 语义搜索，召回效果显著提升。
 
 ### Memory 裁剪拆散 tool_calls 配对
 按单条消息裁剪时，保留了 `role: tool` 却丢了配对的 `tool_calls`，API 报 400。
