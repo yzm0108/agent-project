@@ -5,7 +5,7 @@
 ## 架构
 
 ```
-飞书用户   ──→ FeishuBot (Webhook + API)  ──┐
+飞书用户   ──→ FeishuBot (长连接 + API)   ──┐
                                               ├──→ BotHandler ──→ GuizhouAgent
 企微用户   ──→ WecomBot  (长连接)          ──┘
 ```
@@ -65,20 +65,16 @@ python bot/main.py --platform all
 
 ## 平台接入指南
 
-### 飞书（需要公网地址）
+### 飞书（长连接，无需公网地址）
 
 1. 访问 [飞书开放平台](https://open.feishu.cn/) 创建企业自建应用
 2. 开启「机器人」能力
 3. 获取 App ID 和 App Secret
-4. 本地开发用 ngrok 暴露端口：
-
-```bash
-ngrok http 8080
-# 把 https://xxx.ngrok.io/feishu/webhook 填入飞书后台「事件订阅」
-```
-
+4. 事件订阅 → 选择「使用长连接接收事件」
 5. 订阅事件：`im.message.receive_v1`
 6. 添加权限：`im:message:receive_v1`、`im:message:send_v1`
+
+> 长连接由 `lark-oapi` SDK 主动连出，不需要 ngrok，也不需要公网 IP。
 
 ### 企业微信（长连接，无需公网地址）
 
@@ -95,7 +91,7 @@ ngrok http 8080
 |------|------|
 | `base.py` | 适配器基类 + 统一消息格式（InboundMessage / OutboundMessage） |
 | `handler.py` | 核心处理器 — 持有 GuizhouAgent，管理会话历史 |
-| `feishu_bot.py` | 飞书适配器（Webhook + HTTP API） |
+| `feishu_bot.py` | 飞书适配器（WebSocket 长连接 + HTTP API） |
 | `wecom_bot.py` | 企业微信适配器（WebSocket 长连接） |
 | `main.py` | 统一启动入口 |
 | `config.yaml` | 配置文件（模板） |
@@ -106,6 +102,6 @@ ngrok http 8080
 |------|---------|
 | 多平台 Bot 怎么设计的？ | 适配器模式，BaseChannel 统一接口，新增平台不改核心代码 |
 | 不同平台的会话怎么隔离？ | handler 用 session_id 为 key 维护独立 history dict，30 分钟过期 |
-| 飞书接入的难点？ | token 管理（提前 5 分钟刷新）、webhook 验证、消息格式转换 |
+| 飞书接入的难点？ | 长连接 SDK 在独立线程跑事件循环、回调跨线程回主循环、token 管理（提前 5 分钟刷新） |
 | 企微接入的难点？ | 长连接 SDK 的 reply() 是 async，需 await；仅支持 markdown/template_card |
 | 怎么对接已有的 Agent？ | 复用 agent.run() 接口，传入 history，取回 new_history 更新会话 |

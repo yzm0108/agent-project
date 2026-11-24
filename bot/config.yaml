@@ -5,7 +5,7 @@ feishu:
   # 从飞书开放平台获取: https://open.feishu.cn/
   app_id: "${FEISHU_APP_ID}"
   app_secret: "${FEISHU_APP_SECRET}"
-  # Webhook 服务端口
+  # 长连接模式已不使用；保留字段兼容旧配置
   port: 8888
 
 wecom:

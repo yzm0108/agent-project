@@ -1,129 +1,139 @@
 """
-feishu_bot.py — 飞书平台适配器
+feishu_bot.py — 飞书平台适配器（长连接模式）
 
-技术选型：aiohttp（轻量异步 HTTP）+ 飞书开放 API
+使用飞书官方 lark-oapi SDK 的 WebSocket 长连接接收事件：
+- 不需要公网地址 / ngrok
+- 客户端主动连接飞书网关，app_id + app_secret 认证
+- 回复仍走飞书开放 API（tenant_access_token + im/v1/messages）
 
 接入步骤：
 1. 访问 https://open.feishu.cn/ 创建企业自建应用
-2. 在「机器人」页面开启机器人能力
-3. 获取 App ID 和 App Secret → 写入 config.yaml
-4. 在「事件订阅」中配置请求地址：https://你的域名/feishu/webhook
-5. 订阅事件：im.message.receive_v1
-6. 添加权限：im:message:receive_v1、im:message:send_v1
-
-本地开发可配合 ngrok: ngrok http 8080
-然后把 https://xxx.ngrok.io/feishu/webhook 填入飞书后台
-
-飞书消息格式比较复杂（支持富文本卡片），这里只处理纯文本消息。
+2. 开启机器人能力
+3. 获取 App ID / App Secret → 写入 config.yaml 或环境变量
+4. 事件订阅 → 选择「使用长连接接收事件」，订阅 im.message.receive_v1
+5. 权限：im:message:receive_v1、im:message:send_v1
 """
+import asyncio
 import json
+import re
+import threading
 import time
+
 import aiohttp
-from aiohttp import web
+
 from bot.base import BaseChannel, InboundMessage, OutboundMessage
 
 
 class FeishuBot(BaseChannel):
-    """飞书适配器 — 通过 Webhook 接收消息，HTTP API 发送回复"""
+    """飞书适配器 — WebSocket 长连接接收消息，HTTP API 发送回复"""
 
     def __init__(self, app_id: str, app_secret: str, port: int = 8080):
         super().__init__(platform_name="feishu")
         self.app_id = app_id
         self.app_secret = app_secret
-        self.port = port
+        self.port = port  # 兼容旧配置，长连接模式不再使用
         self._tenant_token: str | None = None
         self._token_expire: float = 0.0
         self._seen_event_ids: set[str] = set()
-        self._startup_time = time.time()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._client = None
 
     # ===== 启动 =====
 
     async def start(self):
-        """启动 HTTP 服务器接收飞书事件"""
-        print(f"[FeishuBot] 启动中 (0.0.0.0:{self.port})...")
-        print(f"[FeishuBot] Webhook 地址: http://你的IP:{self.port}/feishu/webhook")
-
-        # 先获取 token
-        await self._get_tenant_token()
-
-        app = web.Application()
-        app.router.add_post("/feishu/webhook", self._handle_webhook)
-        app.router.add_get("/feishu/webhook", self._handle_challenge)  # 飞书首次配置时会发 GET 验证
-
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", self.port)
-        await site.start()
-
-        print(f"[FeishuBot] 已启动，等待消息...")
-        # 永久保持运行
-        while True:
-            await asyncio.sleep(3600)
-
-    async def _handle_challenge(self, request: web.Request) -> web.Response:
-        """飞书首次配置事件订阅时的 URL 验证"""
-        body = await request.json()
-        challenge = body.get("challenge")
-        if challenge:
-            return web.json_response({"challenge": challenge})
-        return web.json_response({"error": "no challenge"}, status=400)
-
-    async def _handle_webhook(self, request: web.Request) -> web.Response:
-        """接收飞书推送的事件"""
-        body = await request.json()
-
-        # 飞书会先发 challenge 验证
-        if body.get("type") == "url_verification":
-            return web.json_response({"challenge": body["challenge"]})
-
-        # 处理消息事件
-        header = body.get("header", {})
-        if header.get("event_type") != "im.message.receive_v1":
-            return web.json_response({"code": 0})
-
-        create_time_ms = int(header.get("create_time", 0))
-        if create_time_ms and create_time_ms / 1000 < self._startup_time - 5:
-            return web.json_response({"code": 0})
-
-        event_id = header.get("event_id", "")
-        if event_id and event_id in self._seen_event_ids:
-            return web.json_response({"code": 0})
-        if event_id:
-            self._seen_event_ids.add(event_id)
-            if len(self._seen_event_ids) > 1000:
-                self._seen_event_ids.clear()
-
-        event = body.get("event", {})
-        message = event.get("message", {})
-        content_str = message.get("content", "{}")
-        try:
-            content = json.loads(content_str)
-            text = content.get("text", "")
-        except json.JSONDecodeError:
-            text = ""
-
-        if not text.strip():
-            return web.json_response({"code": 0})
-
-        sender = event.get("sender", {}).get("sender_id", {})
-        user_id = sender.get("open_id", "unknown")
-        chat_id = event.get("message", {}).get("chat_id", "")
-
-        inbound = InboundMessage(
-            session_id=f"feishu_{chat_id}",
-            user_id=user_id,
-            user_name="飞书用户",
-            text=text,
-            platform="feishu",
+        """启动飞书长连接（SDK 在独立线程中运行自己的事件循环）"""
+        print("[FeishuBot] 启动中（长连接模式）...")
+        self._loop = asyncio.get_running_loop()
+        self._thread = threading.Thread(
+            target=self._run_ws_client, daemon=True, name="feishu-ws"
         )
+        self._thread.start()
 
-        reply = await self._handle_incoming(inbound)
+        while self._thread.is_alive():
+            await asyncio.sleep(5)
+        print("[FeishuBot] 长连接线程已退出")
 
-        if reply:
-            for segment in reply.split("\n---SPLIT---\n"):
-                await self._send_text(chat_id, segment)
+    def _run_ws_client(self):
+        """在独立线程中导入并启动 lark-oapi，避免与主事件循环冲突"""
+        try:
+            print("[FeishuBot] 正在加载飞书 SDK（首次导入较慢）...")
+            import lark_oapi as lark
 
-        return web.json_response({"code": 0})
+            print("[FeishuBot] SDK 已加载，建立 WebSocket 长连接...")
+            handler = (
+                lark.EventDispatcherHandler.builder("", "")
+                .register_p2_im_message_receive_v1(self._on_message_event)
+                .build()
+            )
+            self._client = lark.ws.Client(
+                self.app_id,
+                self.app_secret,
+                event_handler=handler,
+                log_level=lark.LogLevel.INFO,
+            )
+            self._client.start()
+        except Exception as e:
+            print(f"[FeishuBot] 长连接异常: {type(e).__name__}: {e}")
+
+    def _on_message_event(self, data):
+        """飞书事件回调（运行在 SDK 线程），转交主事件循环处理"""
+        try:
+            header = getattr(data, "header", None)
+            event = getattr(data, "event", None)
+            message = getattr(event, "message", None) if event else None
+            if message is None:
+                return
+            if getattr(message, "message_type", "") != "text":
+                return
+
+            event_id = getattr(header, "event_id", "") if header else ""
+            if event_id and event_id in self._seen_event_ids:
+                return
+            if event_id:
+                self._seen_event_ids.add(event_id)
+                if len(self._seen_event_ids) > 1000:
+                    self._seen_event_ids.clear()
+
+            chat_id = getattr(message, "chat_id", "")
+            content_str = getattr(message, "content", "{}")
+            try:
+                text = json.loads(content_str).get("text", "")
+            except (json.JSONDecodeError, TypeError):
+                return
+            text = re.sub(r"@_user_\d+", "", text).strip()
+            if not text or not chat_id:
+                return
+
+            sender = getattr(event, "sender", None)
+            sender_id = getattr(sender, "sender_id", None) if sender else None
+            user_id = getattr(sender_id, "open_id", "unknown") if sender_id else "unknown"
+
+            inbound = InboundMessage(
+                session_id=f"feishu_{chat_id}",
+                user_id=user_id,
+                user_name="飞书用户",
+                text=text,
+                platform="feishu",
+                timestamp=time.time(),
+            )
+
+            if self._loop is None or not self._loop.is_running():
+                print("[FeishuBot] 主事件循环未运行，消息丢弃")
+                return
+            fut = asyncio.run_coroutine_threadsafe(
+                self._handle_incoming(inbound), self._loop
+            )
+            fut.add_done_callback(self._log_future_error)
+        except Exception as e:
+            print(f"[FeishuBot] 消息解析异常: {type(e).__name__}: {e}")
+
+    @staticmethod
+    def _log_future_error(fut):
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"[FeishuBot] 消息处理异常: {type(e).__name__}: {e}")
 
     # ===== 发送消息 =====
 
@@ -160,7 +170,7 @@ class FeishuBot(BaseChannel):
                     if result.get("code") != 0:
                         print(f"[FeishuBot] 发送失败: {result}")
                     else:
-                        print(f"[FeishuBot] 发送成功")
+                        print("[FeishuBot] 发送成功")
         except Exception as e:
             print(f"[FeishuBot] 发送异常: {e}")
 
@@ -187,7 +197,3 @@ class FeishuBot(BaseChannel):
         except Exception as e:
             print(f"[FeishuBot] Token 获取异常: {e}")
             return None
-
-
-# 需要 asyncio（飞书用 asyncio.sleep）
-import asyncio
